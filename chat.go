@@ -29,9 +29,9 @@ const (
 
 type chatResponseFull struct {
 	Channel            string `json:"channel"`
-	Timestamp          string `json:"ts"`                             //Regular message timestamp
-	MessageTimeStamp   string `json:"message_ts"`                     //Ephemeral message timestamp
-	ScheduledMessageID string `json:"scheduled_message_id,omitempty"` //Scheduled message id
+	Timestamp          string `json:"ts"`                             // Regular message timestamp
+	MessageTimeStamp   string `json:"message_ts"`                     // Ephemeral message timestamp
+	ScheduledMessageID string `json:"scheduled_message_id,omitempty"` // Scheduled message id
 	Text               string `json:"text"`
 	SlackResponse
 }
@@ -182,7 +182,7 @@ func (api *Client) UnfurlMessage(channelID, timestamp string, unfurls map[string
 
 // UnfurlMessageContext unfurls a message in a channel with a custom context
 func (api *Client) UnfurlMessageContext(ctx context.Context, channelID, timestamp string, unfurls map[string]Attachment, options ...MsgOption) (string, string, string, error) {
-	return api.SendMessageContext(ctx, channelID, MsgOptionUnfurl(timestamp, unfurls), MsgOptionCompose(options...))
+	return api.SendMessageContext(ctx, channelID, MsgOptionUnfurl(channelID, timestamp, unfurls), MsgOptionCompose(options...))
 }
 
 // UnfurlMessageWithAuthURL sends an unfurl request containing an
@@ -293,6 +293,7 @@ type sendConfig struct {
 	responseType    string
 	replaceOriginal bool
 	deleteOriginal  bool
+	body            any
 }
 
 func (t sendConfig) BuildRequest(token, channelID string) (req *http.Request, _ func(*chatResponseFull) responseParser, err error) {
@@ -316,6 +317,12 @@ func (t sendConfig) BuildRequestContext(ctx context.Context, token, channelID st
 			replaceOriginal: t.replaceOriginal,
 			deleteOriginal:  t.deleteOriginal,
 		}.BuildRequestContext(ctx)
+	case chatUnfurl:
+		return jsonSender{
+			token:    token,
+			endpoint: t.endpoint,
+			body:     t.body,
+		}.BuildRequestContext(ctx)
 	default:
 		return formSender{endpoint: t.endpoint, values: t.values}.BuildRequestContext(ctx)
 	}
@@ -334,6 +341,24 @@ func (t formSender) BuildRequestContext(ctx context.Context) (*http.Request, fun
 	req, err := formReq(ctx, t.endpoint, t.values)
 	return req, func(resp *chatResponseFull) responseParser {
 		return newJSONParser(resp)
+	}, err
+}
+
+type jsonSender struct {
+	token    string
+	endpoint string
+	body     any
+}
+
+func (t jsonSender) BuildRequest() (*http.Request, func(*chatResponseFull) responseParser, error) {
+	return t.BuildRequestContext(context.Background())
+}
+
+func (t jsonSender) BuildRequestContext(ctx context.Context) (*http.Request, func(*chatResponseFull) responseParser, error) {
+	req, err := jsonReq(ctx, t.endpoint, t.body)
+	req.Header.Set("Authorization", "Bearer "+t.token)
+	return req, func(resp *chatResponseFull) responseParser {
+		return newContentTypeParser(resp)
 	}, err
 }
 
@@ -426,16 +451,23 @@ func MsgOptionDelete(timestamp string) MsgOption {
 	}
 }
 
+type unfurlReqBody struct {
+	Channel   string                `json:"channel,omitempty"`
+	Timestamp string                `json:"ts,omitempty"`
+	Unfurls   map[string]Attachment `json:"unfurls,omitempty"`
+}
+
 // MsgOptionUnfurl unfurls a message based on the timestamp.
-func MsgOptionUnfurl(timestamp string, unfurls map[string]Attachment) MsgOption {
+func MsgOptionUnfurl(channelID string, timestamp string, unfurls map[string]Attachment) MsgOption {
 	return func(config *sendConfig) error {
+		config.mode = chatUnfurl
 		config.endpoint = config.apiurl + string(chatUnfurl)
-		config.values.Add("ts", timestamp)
-		unfurlsStr, err := json.Marshal(unfurls)
-		if err == nil {
-			config.values.Add("unfurls", string(unfurlsStr))
+		config.body = &unfurlReqBody{
+			Channel:   channelID,
+			Timestamp: timestamp,
+			Unfurls:   unfurls,
 		}
-		return err
+		return nil
 	}
 }
 

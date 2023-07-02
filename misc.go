@@ -113,8 +113,12 @@ func formReq(ctx context.Context, endpoint string, values url.Values) (req *http
 }
 
 func jsonReq(ctx context.Context, endpoint string, body interface{}) (req *http.Request, err error) {
-	buffer := bytes.NewBuffer([]byte{})
-	if err = json.NewEncoder(buffer).Encode(body); err != nil {
+	buffer := new(bytes.Buffer)
+
+	encoder := json.NewEncoder(buffer)
+	encoder.SetEscapeHTML(false)
+	err = encoder.Encode(body)
+	if err != nil {
 		return nil, err
 	}
 

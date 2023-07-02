@@ -2,6 +2,7 @@ package slack
 
 import (
 	"encoding/json"
+	"github.com/stretchr/testify/require"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -73,9 +74,11 @@ func TestGetPermalink(t *testing.T) {
 
 func TestPostMessage(t *testing.T) {
 	type messageTest struct {
-		endpoint string
-		opt      []MsgOption
-		expected url.Values
+		endpoint       string
+		opt            []MsgOption
+		expectedHeader map[string]string
+		expectedForm   url.Values
+		expectedJSON   string
 	}
 
 	blocks := []Block{NewContextBlock("context", NewTextBlockObject(PlainTextType, "hello", false, false))}
@@ -85,7 +88,7 @@ func TestPostMessage(t *testing.T) {
 		"OnlyBasicProperties": {
 			endpoint: "/chat.postMessage",
 			opt:      []MsgOption{},
-			expected: url.Values{
+			expectedForm: url.Values{
 				"channel": []string{"CXXX"},
 				"token":   []string{"testing-token"},
 			},
@@ -96,7 +99,7 @@ func TestPostMessage(t *testing.T) {
 				MsgOptionBlocks(blocks...),
 				MsgOptionText("text", false),
 			},
-			expected: url.Values{
+			expectedForm: url.Values{
 				"blocks":  []string{blockStr},
 				"channel": []string{"CXXX"},
 				"text":    []string{"text"},
@@ -111,7 +114,7 @@ func TestPostMessage(t *testing.T) {
 						Blocks: Blocks{BlockSet: blocks},
 					}),
 			},
-			expected: url.Values{
+			expectedForm: url.Values{
 				"attachments": []string{`[{"blocks":` + blockStr + `}]`},
 				"channel":     []string{"CXXX"},
 				"token":       []string{"testing-token"},
@@ -129,7 +132,7 @@ func TestPostMessage(t *testing.T) {
 						},
 					}),
 			},
-			expected: url.Values{
+			expectedForm: url.Values{
 				"metadata": []string{`{"event_type":"testing-event","event_payload":{"id":13,"name":"testing-name"}}`},
 				"channel":  []string{"CXXX"},
 				"token":    []string{"testing-token"},
@@ -138,21 +141,30 @@ func TestPostMessage(t *testing.T) {
 		"Unfurl": {
 			endpoint: "/chat.unfurl",
 			opt: []MsgOption{
-				MsgOptionUnfurl("123", map[string]Attachment{"something": {Text: "attachment-test"}}),
+				MsgOptionUnfurl("CXXX", "123", map[string]Attachment{"https://example.com": {
+					Blocks: Blocks{
+						BlockSet: []Block{
+							ImageBlock{
+								Type:     "image",
+								ImageURL: "https://example.com/1.jpg",
+								AltText:  "image",
+							},
+						},
+					},
+				}}),
 			},
-			expected: url.Values{
-				"channel": []string{"CXXX"},
-				"token":   []string{"testing-token"},
-				"ts":      []string{"123"},
-				"unfurls": []string{`{"something":{"text":"attachment-test","blocks":null}}`},
+			expectedHeader: map[string]string{
+				"Authorization": "Bearer " + validToken,
 			},
+			expectedForm: nil,
+			expectedJSON: `{"channel":"CXXX","ts":"123","unfurls":{"https://example.com":{"blocks":[{"type":"image","image_url":"https://example.com/1.jpg","alt_text":"image"}]}}}`,
 		},
 		"UnfurlAuthURL": {
 			endpoint: "/chat.unfurl",
 			opt: []MsgOption{
 				MsgOptionUnfurlAuthURL("123", "https://auth-url.com"),
 			},
-			expected: url.Values{
+			expectedForm: url.Values{
 				"channel":       []string{"CXXX"},
 				"token":         []string{"testing-token"},
 				"ts":            []string{"123"},
@@ -164,7 +176,7 @@ func TestPostMessage(t *testing.T) {
 			opt: []MsgOption{
 				MsgOptionUnfurlAuthRequired("123"),
 			},
-			expected: url.Values{
+			expectedForm: url.Values{
 				"channel":            []string{"CXXX"},
 				"token":              []string{"testing-token"},
 				"ts":                 []string{"123"},
@@ -176,7 +188,7 @@ func TestPostMessage(t *testing.T) {
 			opt: []MsgOption{
 				MsgOptionUnfurlAuthMessage("123", "Please!"),
 			},
-			expected: url.Values{
+			expectedForm: url.Values{
 				"channel":           []string{"CXXX"},
 				"token":             []string{"testing-token"},
 				"ts":                []string{"123"},
@@ -192,19 +204,33 @@ func TestPostMessage(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			http.DefaultServeMux = new(http.ServeMux)
 			http.HandleFunc(test.endpoint, func(rw http.ResponseWriter, r *http.Request) {
+				if len(test.expectedHeader) > 0 {
+					for k, want := range test.expectedHeader {
+						got := r.Header.Get(k)
+						require.Equal(t, want, got, "want header %q equals %q", k, want)
+					}
+				}
+
 				body, err := ioutil.ReadAll(r.Body)
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 					return
 				}
-				actual, err := url.ParseQuery(string(body))
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-					return
-				}
-				if !reflect.DeepEqual(actual, test.expected) {
-					t.Errorf("\nexpected: %s\n  actual: %s", test.expected, actual)
-					return
+
+				if test.expectedForm != nil {
+					actual, err := url.ParseQuery(string(body))
+					if err != nil {
+						t.Errorf("unexpected error: %v", err)
+						return
+					}
+					if !reflect.DeepEqual(actual, test.expectedForm) {
+						t.Errorf("\nexpected: %s\n  actual: %s", test.expectedForm, actual)
+						return
+					}
+				} else if test.expectedJSON != "" {
+					require.JSONEq(t, test.expectedJSON, string(body))
+				} else {
+					t.Fatal("either expected or expectedJSON must be set")
 				}
 			})
 
